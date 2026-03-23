@@ -1,0 +1,109 @@
+//// Black Marble Test
+// By: Mark Lannaman
+/* 
+Description: Visualizing VIIRS nighttime lights across India (2012-present) and then animating in 
+Google Earth Studio on a globe. NASA Scientific Visualization has already done something similar,
+albeit not with Google Earth Studio. So shoutout to them for beating me to the punch, and let's 
+see if I can produce something similar. (https://svs.gsfc.nasa.gov/5276/)
+*/ 
+
+// ============================================================
+// STEP 1: India Boundary
+// ============================================================
+var india = ee.FeatureCollection('USDOS/LSIB_SIMPLE/2017')
+  .filter(ee.Filter.eq('country_na', 'India'));
+
+var indiaGeom = india.geometry();
+
+// Center map on India
+Map.centerObject(indiaGeom, 5);
+Map.setOptions('SATELLITE');
+
+
+// ============================================================
+// STEP 2: Import VIIRS Monthly Composites
+// Already cloud-masked and stray-light filtered by NOAA
+// Band used: 'avg_rad' (average radiance, nW/cm²/sr)
+// ============================================================
+var viirs = ee.ImageCollection('NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG')
+  .select('avg_rad');
+
+
+// ============================================================
+// STEP 3: Annual Median Composites, Clipped to India
+// ============================================================
+
+// VIIRS data starts April 2012, so we begin at 2012
+var startYear = 2012;
+var endYear = 2025;
+
+var years = ee.List.sequence(startYear, endYear);
+
+var annualComposites = years.map(function(year) {
+  year = ee.Number(year);
+  
+  var composite = viirs
+    .filter(ee.Filter.calendarRange(year, year, 'year'))
+    .median()
+    .clip(indiaGeom);
+  
+  // Tag each image with its year for export labeling
+  return composite.set('year', year).rename('avg_rad');
+});
+
+// Convert to ImageCollection for inspection
+var annualCollection = ee.ImageCollection.fromImages(annualComposites);
+print('Annual composites:', annualCollection);
+
+
+// ============================================================
+// STEP 4: Visualization Parameters
+// Fixed min/max kept consistent across all years so the
+// animation is comparable frame to frame
+// Classic nighttime lights palette: black → gold → white
+// ============================================================
+var vizParams = {
+  min: 0,
+  max: 60,       // nW/cm²/sr — adjust if clipping highlights
+  palette: ['000000', '1a1a2e', 'ff6b35', 'ffd700', 'ffffff']
+};
+
+// Preview the most recent year on the map
+var preview = ee.Image(annualComposites.get(endYear - startYear));
+Map.addLayer(preview, vizParams, 'VIIRS ' + endYear);
+
+// Optional: add India boundary outline
+Map.addLayer(india.style({color: 'white', fillColor: '00000000', width: 1}), {}, 'India Boundary');
+
+
+// ============================================================
+// STEP 5: Export Annual GeoTIFFs to Google Drive
+// One export task per year — run all tasks from the Tasks tab
+// These GeoTIFFs will be converted to PNG frames for GES
+// ============================================================
+
+// Bounding box for India (used to define export region)
+var exportRegion = indiaGeom.bounds();
+
+for (var y = startYear; y <= endYear; y++) {
+  var idx = y - startYear;
+  var img = ee.Image(annualComposites.get(idx));
+  
+  Export.image.toDrive({
+    image: img.visualize(vizParams),
+    description: 'VIIRS_India_' + y,
+    folder: 'BlackMarble_India_KMZ',
+    fileNamePrefix: 'VIIRS_India_' + y,
+    region: exportRegion,
+    scale: 500,
+    crs: 'EPSG:4326',
+    maxPixels: 1e9,
+    fileFormat: 'KMZ'
+  });
+}
+
+print('Check the Tasks tab to run all', endYear - startYear + 1, 'export jobs.');
+
+
+// Link to github repo for this project where animation can be found:
+// 
